@@ -37,13 +37,19 @@
   {:firefox "geckodriver"
    :chrome "chromedriver"
    :phantom "phantomjs"
-   :safari "safaridriver"})
+   :safari "safaridriver"
+   :winappdriver "WinAppDriver"
+   :appium "appium"
+   :selenium-server "selenium-standalone start"})
 
 (def default-ports
   "Default ports to launch a driver process."
   {:firefox 4444
    :chrome 9515
-   :phantom 8910})
+   :phantom 8910
+   :winappdriver 4727
+   :appium 4723
+   :selenium-server 4444})
 
 (def default-locator "xpath")
 (def locator-xpath "xpath")
@@ -132,11 +138,14 @@
     nil resp
     (:value resp)))
 
-(defn create-session
+(defmulti create-session
   "Initiates a new session for a driver. Opens a browser window as a
   side-effect. All the further requests are made within specific
   session. Some drivers may work with only one active session. Returns
   a long string identifier."
+  dispatch-driver)
+
+(defmethod create-session :default 
   [driver & [capabilities]]
   (with-resp driver
     :post
@@ -145,8 +154,12 @@
     result
     (:sessionId result)))
 
-(defn delete-session [driver]
+(defmulti delete-session
   "Deletes a session. Closes a browser window."
+  dispatch-driver)
+
+(defmethod delete-session :default 
+  [driver] 
   (with-resp driver
     :delete
     [:session (:session @driver)]
@@ -156,7 +169,7 @@
 ;; actice element
 ;;
 
-(defmulti ^:private get-active-element*
+(defmulti get-active-element*
   "Returns the currect active element selected by mouse or a
   keyboard (Tab, arrows)."
   dispatch-driver)
@@ -477,6 +490,7 @@
     resp
     (-> resp :value first second)))
 
+
 (defmethod find-element* :default
   [driver locator term]
   (with-resp driver :post
@@ -512,6 +526,7 @@
     {:using locator :value term}
     resp
     (-> resp :value :ELEMENT)))
+
 
 (defmulti find-elements-from* dispatch-driver)
 
@@ -1954,45 +1969,44 @@
 (defn create-driver
   "Creates a new driver instance.
 
-  Returns an atom that represents driver's state. Some functions, for
-  example creating or deleting a session may change its state.
+   Returns an atom that represents driver's state. Some functions, for
+   example creating or deleting a session may change its state.
 
-  The function does not start a process or open a window. It just
-  creates an atom without side effects.
+   The function does not start a process or open a window. It just
+   creates an atom without side effects.
 
-  Arguments:
+   Arguments:
 
-  - `type` is a keyword determines what driver to use. The supported
-  browsers are `:firefox`, `:chrome`, `:phantom` and `:safari`.
+   - `type` is a keyword determines what driver to use. The supported
+   browsers are `:firefox`, `:chrome`, `:phantom` and `:safari`.
 
-  - `opt` is a map with additional options for a driver. The supported
-  options are:
+   - `opt` is a map with additional options for a driver. The supported
+   options are:
 
-  -- `:host` is a string with either IP or hostname. Use it if the
-  server is run not locally but somethere in your network.
+   -- `:host` is a string with either IP or hostname. Use it if the
+   server is run not locally but somethere in your network.
 
-  -- `:port` is an integer value what HTTP port to use. It is taken
-  from the `default-ports` global map if is not passed. If there is no
-  port in that map, a random-generated port is used.
+   -- `:port` is an integer value what HTTP port to use. It is taken
+   from the `default-ports` global map if is not passed. If there is no
+   port in that map, a random-generated port is used.
 
-  -- `:locator` is a string determs what algorithm to use by default
-  when finding elements on a page. `default-locator` variable is used
-  if not passed."
-  [type & [opt]]
-  (let [driver (atom {})
-        host (or (:host opt) "127.0.0.1")
-        port (or (:port opt)
-                 (discover-port type host))
-        url (make-url host port)
-        locator (or (:locator opt) default-locator)]
-    (swap! driver assoc
-           :type type
-           :host host
-           :port port
-           :url url
-           :locator locator)
-    (log/debugf "Created driver: %s %s:%s" (name type) host port)
-    driver))
+   -- `:root-path` is string prefix in case webdriver is proxied with URL prefix 
+
+   -- `:locator` is a string determs what algorithm to use by default
+   when finding elements on a page. `default-locator` variable is used
+   if not passed."
+  [type {:keys [host port root-path locator]
+         :or {host "127.0.0.1"
+              port (discover-port type host)
+              root-path ""
+              locator default-locator}
+         :as opt}]
+  (log/debugf "Created driver: %s %s:%s" (name type) host port)
+  (atom {:type type
+         :host host
+         :port port
+         :root-path root-path
+         :locator locator}))
 
 (defn run-driver
   "Runs a driver process locally.
@@ -2049,12 +2063,20 @@
   See https://www.w3.org/TR/webdriver/#capabilities"
   [driver & [opt]]
   (wait-running driver)
-  (let [capabilities (:desired-capabilities opt)
-        session (create-session driver capabilities)]
-    (swap! driver assoc
-           :session session
-           :desired-capabilities capabilities)
-    driver))
+  (letfn [(camelize-key [^String k]
+            (let [[fw & rw] (clojure.string/split k #"[_-]")]
+              (apply str fw (map clojure.string/capitalize rw))))
+          (camelize-map [m]
+            (assert (map? m) "Desired capabilities wrong input type")
+            (zipmap
+              (map camelize-key (map name (keys m))) 
+              (vals m)))] 
+    (let [capabilities (camelize-map (:desired-capabilities opt))
+          session (create-session driver capabilities)]
+      (swap! driver assoc
+             :session session
+             :desired-capabilities capabilities)
+      driver)))
 
 (defn disconnect-driver
   "Disconnects from a running Webdriver server.
@@ -2162,7 +2184,7 @@
 
 (defmacro with-phantom
   "Performs the body with Phantom.js session. A shortcut for
-  `with-driver`."
+   `with-driver`."
   [opt bind & body]
   `(with-driver :phantom ~opt ~bind
      ~@body))

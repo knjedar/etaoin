@@ -65,6 +65,11 @@
   [driver method path-args payload]
   (let [host (:host @driver)
         port (:port @driver)
+        root-path (:root-path @driver)
+        root-path (if (some #(% root-path) [string? keyword? symbol?]) 
+                    [root-path]
+                    (vec root-path))
+        path-args (into root-path path-args)
         path (get-url-path path-args)
         url (format "http://%s:%s/%s" host port path)
         params (merge default-api-params
